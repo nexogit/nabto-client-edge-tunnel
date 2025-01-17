@@ -1,5 +1,7 @@
 #pragma once
 #include <string>
+#include <map>
+
 #include <memory>
 
 #include <sstream>
@@ -77,7 +79,7 @@ bool HasNoBookmarks();
 // insert info into bookmarks, and set the index into the info
 void AddPairedDeviceToBookmarks(DeviceInfo& Info);
 bool GetPrivateKey(std::shared_ptr<nabto::client::Context> Context, std::string& PrivateKey);
-void PrintBookmarks();
+std::map<int, Configuration::DeviceInfo> PrintBookmarks();
 bool DeleteBookmark(const uint32_t& bookmark);
 
 bool makeDirectories(const std::string& in);

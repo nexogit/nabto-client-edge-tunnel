@@ -310,21 +310,21 @@ bool GetPrivateKey(std::shared_ptr<nabto::client::Context> Context, string& Out)
     return ReadEntireFileZeroTerminated(Configuration.KeyFilePath, Out);
 }
 
-void PrintBookmarks()
-{
+std::map<int, Configuration::DeviceInfo> PrintBookmarks()
+{   
+    int index = 0;
     if (Configuration.Bookmarks.empty())
     {
         std::cout << "No bookmarked devices were found. Maybe you should pair with a few devices?" << std::endl;
-        return;
     }
-
-    int index = 0;
     std::cout << "The following devices are saved in your bookmarks:" << std::endl;
     for (auto Bookmark : Configuration.Bookmarks)
     {
         std::cout << "[" << index << "] ProductId: " << Bookmark.second.getProductId() << " DeviceId: " << Bookmark.second.getDeviceId() << std::endl;
         index++;
     }
+    return Configuration.Bookmarks;    
+
 }
 
 

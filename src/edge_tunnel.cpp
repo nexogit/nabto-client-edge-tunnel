@@ -1,13 +1,13 @@
 #include <nabto_client.hpp>
 #include <nabto/nabto_client_experimental.h>
-
+#include "httplib.h"
 #include "pairing.hpp"
 #include "config.hpp"
 #include "timestamp.hpp"
 #include "iam.hpp"
 #include "iam_interactive.hpp"
 #include "version.hpp"
-
+#include <sstream> // Per std::ostringstream
 #include <3rdparty/cxxopts.hpp>
 #include <3rdparty/nlohmann/json.hpp>
 
@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <thread>
 #include <future>
+#include <map>
 
 using json = nlohmann::json;
 
@@ -192,11 +193,12 @@ std::shared_ptr<nabto::client::Connection> createConnection(std::shared_ptr<nabt
     return connection;
 }
 
-static void get_service(std::shared_ptr<nabto::client::Connection> connection, const std::string& service);
+static nlohmann::json get_service(std::shared_ptr<nabto::client::Connection> connection, const std::string& service);
 static void print_service(const nlohmann::json& service);
 
-bool list_services(std::shared_ptr<nabto::client::Connection> connection)
-{
+std::map<std::string, nlohmann::json> list_services(std::shared_ptr<nabto::client::Connection> connection)
+{   
+    std::map<std::string, nlohmann::json> services;
     auto coap = connection->createCoap("GET", "/tcp-tunnels/services");
     coap->execute()->waitForResult();
     if (coap->getResponseStatusCode() == 205 &&
@@ -208,21 +210,21 @@ bool list_services(std::shared_ptr<nabto::client::Connection> connection)
             std::cout << "Available services ..." << std::endl;
             try {
                 for (auto s : data) {
-                    get_service(connection, s.get<std::string>());
+                    nlohmann::json test = get_service(connection, s);
+                    if (!test.is_null()) {
+                        services.insert({s.get<std::string>(), test});
+                    }
                 }
             } catch(std::exception& e) {
                 std::cerr << "Failed to get services: " << e.what() << std::endl;
-                return false;
+                return {};
             }
         }
-        return true;
-    } else {
-        std::cerr << "could not get list of services" << std::endl;
-        return false;
     }
+    return services;;
 }
 
-void get_service(std::shared_ptr<nabto::client::Connection> connection, const std::string& service)
+nlohmann::json get_service(std::shared_ptr<nabto::client::Connection> connection, const std::string& service)
 {
     auto coap = connection->createCoap("GET", "/tcp-tunnels/services/" + service);
     coap->execute()->waitForResult();
@@ -232,7 +234,9 @@ void get_service(std::shared_ptr<nabto::client::Connection> connection, const st
         auto cbor = coap->getResponsePayload();
         auto data = json::from_cbor(cbor);
         print_service(data);
+        return data;
     }
+    return nullptr;
 }
 
 std::string constant_width_string(std::string in) {
@@ -330,7 +334,7 @@ void printDeviceInfo(std::shared_ptr<IAM::PairingInfo> pi)
     }
 }
 
-int main(int argc, char** argv)
+int main1(int argc, char** argv)
 {
     cxxopts::Options options("Tunnel client", "Nabto tunnel client example.");
 
@@ -478,7 +482,7 @@ int main(int argc, char** argv)
 
             bool status = false;
             if (result.count("services")) {
-                status = list_services(connection);
+                //status = list_services(connection);
             } else if (result.count("service")) {
                 status = tcptunnel(connection, services);
             } else if (result.count("users")) {
@@ -538,3 +542,129 @@ int main(int argc, char** argv)
         return 1;
     }
 }
+
+int main(int argc, char** argv){
+    httplib::Server server;
+    std::string homeDir = Configuration::getDefaultHomeDir();
+    Configuration::InitializeWithDirectory(homeDir);
+
+
+    // Definisci un endpoint GET
+    server.Get("/devices", [](const httplib::Request &req, httplib::Response &res) {
+        auto name = req.get_param_value("name");
+        std::map<int, Configuration::DeviceInfo> services = Configuration::PrintBookmarks();
+        auto ctx = nabto::client::Context::create();
+        std::string str; // Stringa condivisa per accumulare i risultati
+        std::mutex strMutex; // Mutex per proteggere l'accesso a str
+
+        auto connectToDevice = [&str, &strMutex, ctx](const std::pair<int, Configuration::DeviceInfo>& bookmark) {
+            try {
+                std::cout << bookmark.first;
+                auto d = Configuration::GetPairedDevice(bookmark.first);
+                auto c = createConnection(ctx, *d);
+                if (c != nullptr) {
+                    IAM::IAMError ec; 
+                    std::shared_ptr<IAM::PairingInfo> pi;
+                    std::tie(ec, pi) = IAM::get_pairing_info(c);
+ 
+                    if (pi) {
+                        std::string localStr = "[" + std::to_string(bookmark.first) +"] Name: " + pi->getFriendlyName() + "\tId: " + bookmark.second.deviceId_ + "\n";
+                        // Aggiungi in modo thread-safe alla stringa condivisa
+                        std::lock_guard<std::mutex> lock(strMutex);
+                        str += localStr;
+                    }
+                }
+            } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lock(strMutex);
+                str += "Failed to open a tunnel to " + bookmark.second.deviceId_ + ": " + e.what() + "\n";
+            }
+        };
+
+        std::cout << services.size() << " devices found:\n";
+
+        std::vector<std::future<void>> futures;
+
+        // Avvia task asincroni
+        for (const auto& bookmark : services) {
+            futures.push_back(std::async(std::launch::async, connectToDevice, bookmark));
+        }
+
+        // Attendi il completamento di tutti i task
+        for (auto& future : futures) {
+            future.get(); // Blocca fino a che il task non è completato
+        }
+
+        // Imposta la risposta HTTP
+        res.set_content(str, "text/plain");
+    });
+
+    // Definisci un endpoint POST
+    server.Post("/echo", [](const httplib::Request &req, httplib::Response &res) {
+        std::cout << req.body;
+        res.set_content(req.body, "text/plain"); // Rispondi con il corpo della richiesta
+    });
+
+    // Definisci un endpoint che accetta parametri
+    server.Get("/services", [](const httplib::Request &req, httplib::Response &res) {
+        std::string name = req.get_param_value("device");
+        auto context = nabto::client::Context::create();
+        std::string itemText;
+
+        try {
+
+            std::map<int, Configuration::DeviceInfo> services = Configuration::PrintBookmarks();
+
+            for (const auto& pair : services) {
+                std::string deviceInfo = pair.second.deviceId_.c_str();
+                if (deviceInfo == name) {
+                    auto Device = Configuration::GetPairedDevice(pair.first);
+                    if (!Device) {
+                        std::cerr << "The bookmark 0 does not exist" << std::endl;
+                    } else {
+                        std::cout << "Device Selected " << Device -> getFriendlyName()<<std::endl;;
+                    }
+                    auto connection = createConnection(context, *Device);
+
+                    if (!connection) {
+                        return ;
+                    }
+                
+                    std::cout << "Connected to the device " << Device->getFriendlyName() << std::endl;
+                    //tunnels.clear(); da introdurre un array di connessioni. qua pulisce tutto l'array in quanto sto selezionando il singolo device non servizio
+                    auto servs = list_services(connection);
+                    for (const auto& x : servs) {
+                        itemText += "Id: " + x.first + "\t";
+                        
+                        if (x.second.contains("Type")) {
+                            itemText += "Type: " + x.second["Type"].get<std::string>() + "\t";;
+                        } else {
+                            itemText += "Type: Unknown";
+                        }
+                        
+                        itemText += "\tPort: ";
+                        if (x.second.contains("Port") && x.second["Port"].is_number_integer()) {
+                            auto port = x.second["Port"].get<uint16_t>();
+                            itemText += std::to_string(port);
+                        } else {
+                            itemText += "Unknown";
+                        }
+                    }
+
+                }
+            }
+        } catch (std::exception e) {
+            std::cerr<<"Error " << e.what() << std::endl;
+        }
+
+
+        res.set_content(itemText, "text/plain");
+    });
+
+    // Avvia il server sulla porta 8080
+    std::cout << "Server avviato su http://localhost:8080\n";
+    server.listen("0.0.0.0", 8080);
+
+    return 0;
+
+}
+
