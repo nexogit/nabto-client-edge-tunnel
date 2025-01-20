@@ -277,42 +277,8 @@ bool split_in_service_and_port(const std::string& in, std::string& service, uint
     return true;
 }
 
-bool tcptunnel(std::shared_ptr<nabto::client::Connection> connection, std::vector<std::string> services)
-{
-    std::vector<std::shared_ptr<nabto::client::TcpTunnel> > tunnels;
 
-    for (auto serviceAndPort : services) {
-        std::string service;
-        uint16_t localPort;
-        if (!split_in_service_and_port(serviceAndPort, service, localPort)) {
-            return false;
-        }
 
-        std::shared_ptr<nabto::client::TcpTunnel> tunnel;
-        try {
-            tunnel = connection->createTcpTunnel();
-            tunnel->open(service, localPort)->waitForResult();
-        } catch (std::exception& e) {
-            std::cout << "Failed to open a tunnel to " << serviceAndPort << " error: " << e.what() << std::endl;
-            return false;
-        }
-
-        std::cout << "TCP Tunnel opened for the service " << service << " listening on the local port " << tunnel->getLocalPort() << std::endl;
-        tunnels.push_back(tunnel);
-    }
-
-    // wait for ctrl c
-    signal(SIGINT, &signalHandler);
-
-    auto closeListener = std::make_shared<CloseListener>();
-    connection->addEventsListener(closeListener);
-    connection_ = connection;
-
-    closeListener->waitForClose();
-    connection->removeEventsListener(closeListener);
-    connection_.reset();
-    return true;
-}
 
 void printDeviceInfo(std::shared_ptr<IAM::PairingInfo> pi)
 {
@@ -484,7 +450,7 @@ int main1(int argc, char** argv)
             if (result.count("services")) {
                 //status = list_services(connection);
             } else if (result.count("service")) {
-                status = tcptunnel(connection, services);
+                //status = tcptunnel(connection, services);
             } else if (result.count("users")) {
                 status = IAM::list_users(connection);
             } else if (result.count("roles")) {
@@ -543,33 +509,78 @@ int main1(int argc, char** argv)
     }
 }
 
-int main(int argc, char** argv){
+class HttpServer {
+public:
+    HttpServer(int port) : serverPort(port) {}
+
+    int initialize() {
+        auto bookmarks = Configuration::PrintBookmarks();
+
+        if (bookmarks.empty()) {
+            std::cerr << "No bookmarks found." << std::endl;
+            return 1;
+        }
+
+        // Access the first bookmark (arbitrary choice)
+        auto firstBookmark = bookmarks.begin(); // Get the first element in the map
+        std::cout << "Connecting to device with ID: " << firstBookmark->first << std::endl;
+
+        auto device = Configuration::GetPairedDevice(firstBookmark->first);
+        if (!device) {
+            std::cerr << "Failed to retrieve device information for ID: " << firstBookmark->first << std::endl;
+            return 1;
+        }
+
+        ctx = nabto::client::Context::create();
+        connection = createConnection(ctx, *device);
+        initializeEndpoints();
+        return 0;
+    }
+
+    void start() {
+        std::cout << "Server started at http://localhost:" << serverPort << "\n";
+        server.listen("0.0.0.0", serverPort);
+    }
+
+private:
     httplib::Server server;
-    std::string homeDir = Configuration::getDefaultHomeDir();
-    Configuration::InitializeWithDirectory(homeDir);
+    int serverPort;
+    std::mutex strMutex;
+    std::shared_ptr<nabto::client::Context> ctx;
+    std::map<int, Configuration::DeviceInfo> bookmarks;
+    std::shared_ptr<nabto::client::Connection> connection;
+    std::vector<std::shared_ptr<nabto::client::TcpTunnel>> tunnels;
+    void initializeEndpoints() {
+        server.Get("/devices", [this](const httplib::Request &req, httplib::Response &res) {
+            handleGetDevices(req, res);
+        });
 
+        server.Get("/services", [this](const httplib::Request &req, httplib::Response &res) {
+            handleGetServices(req, res);
+        });
 
-    // Definisci un endpoint GET
-    server.Get("/devices", [](const httplib::Request &req, httplib::Response &res) {
+        server.Get("/connect", [this](const httplib::Request &req, httplib::Response &res) {
+            handleConnect(req, res);
+        });
+    }
+
+    void handleGetDevices(const httplib::Request &req, httplib::Response &res) {
         auto name = req.get_param_value("name");
-        std::map<int, Configuration::DeviceInfo> services = Configuration::PrintBookmarks();
-        auto ctx = nabto::client::Context::create();
-        std::string str; // Stringa condivisa per accumulare i risultati
-        std::mutex strMutex; // Mutex per proteggere l'accesso a str
+        bookmarks = Configuration::PrintBookmarks();
+        auto contex = nabto::client::Context::create();
+        std::string str;
 
-        auto connectToDevice = [&str, &strMutex, ctx](const std::pair<int, Configuration::DeviceInfo>& bookmark) {
+        auto connectToDevice = [&str, this, contex](const std::pair<int, Configuration::DeviceInfo>& bookmark) {
             try {
-                std::cout << bookmark.first;
                 auto d = Configuration::GetPairedDevice(bookmark.first);
-                auto c = createConnection(ctx, *d);
+                auto c = createConnection(contex, *d);
                 if (c != nullptr) {
-                    IAM::IAMError ec; 
+                    IAM::IAMError ec;
                     std::shared_ptr<IAM::PairingInfo> pi;
                     std::tie(ec, pi) = IAM::get_pairing_info(c);
- 
+
                     if (pi) {
-                        std::string localStr = "[" + std::to_string(bookmark.first) +"] Name: " + pi->getFriendlyName() + "\tId: " + bookmark.second.deviceId_ + "\n";
-                        // Aggiungi in modo thread-safe alla stringa condivisa
+                        std::string localStr = "[" + std::to_string(bookmark.first) + "] Name: " + pi->getFriendlyName() + "\tId: " + bookmark.second.deviceId_ + "\n";
                         std::lock_guard<std::mutex> lock(strMutex);
                         str += localStr;
                     }
@@ -580,91 +591,100 @@ int main(int argc, char** argv){
             }
         };
 
-        std::cout << services.size() << " devices found:\n";
-
         std::vector<std::future<void>> futures;
-
-        // Avvia task asincroni
-        for (const auto& bookmark : services) {
+        for (const auto& bookmark : bookmarks) {
             futures.push_back(std::async(std::launch::async, connectToDevice, bookmark));
         }
 
-        // Attendi il completamento di tutti i task
         for (auto& future : futures) {
-            future.get(); // Blocca fino a che il task non è completato
+            future.get();
         }
 
-        // Imposta la risposta HTTP
         res.set_content(str, "text/plain");
-    });
+    }
 
-    // Definisci un endpoint POST
-    server.Post("/echo", [](const httplib::Request &req, httplib::Response &res) {
-        std::cout << req.body;
-        res.set_content(req.body, "text/plain"); // Rispondi con il corpo della richiesta
-    });
 
-    // Definisci un endpoint che accetta parametri
-    server.Get("/services", [](const httplib::Request &req, httplib::Response &res) {
+    void handleGetServices(const httplib::Request &req, httplib::Response &res) {
         std::string name = req.get_param_value("device");
-        auto context = nabto::client::Context::create();
+        ctx = nabto::client::Context::create();
         std::string itemText;
-
+        
         try {
-
-            std::map<int, Configuration::DeviceInfo> services = Configuration::PrintBookmarks();
-
-            for (const auto& pair : services) {
-                std::string deviceInfo = pair.second.deviceId_.c_str();
-                if (deviceInfo == name) {
+            for (const auto& pair : bookmarks) {
+                if (pair.second.deviceId_ == name) {
+                    std::cout << " " << pair.first << " " << pair.second.deviceId_;
                     auto Device = Configuration::GetPairedDevice(pair.first);
                     if (!Device) {
-                        std::cerr << "The bookmark 0 does not exist" << std::endl;
-                    } else {
-                        std::cout << "Device Selected " << Device -> getFriendlyName()<<std::endl;;
+                        std::cerr << "The bookmark does not exist" << std::endl;
+                        continue;
                     }
-                    auto connection = createConnection(context, *Device);
-
+                    connection = createConnection(ctx, *Device);
                     if (!connection) {
-                        return ;
+                        continue;
                     }
-                
-                    std::cout << "Connected to the device " << Device->getFriendlyName() << std::endl;
-                    //tunnels.clear(); da introdurre un array di connessioni. qua pulisce tutto l'array in quanto sto selezionando il singolo device non servizio
+
                     auto servs = list_services(connection);
+                    tunnels.clear();
                     for (const auto& x : servs) {
                         itemText += "Id: " + x.first + "\t";
-                        
-                        if (x.second.contains("Type")) {
-                            itemText += "Type: " + x.second["Type"].get<std::string>() + "\t";;
-                        } else {
-                            itemText += "Type: Unknown";
-                        }
-                        
-                        itemText += "\tPort: ";
-                        if (x.second.contains("Port") && x.second["Port"].is_number_integer()) {
-                            auto port = x.second["Port"].get<uint16_t>();
-                            itemText += std::to_string(port);
-                        } else {
-                            itemText += "Unknown";
-                        }
+                        itemText += "Type: " + (x.second.contains("Type") ? x.second["Type"].get<std::string>() : "Unknown") + "\t";
+                        itemText += "Port: " + (x.second.contains("Port") && x.second["Port"].is_number_integer() ? std::to_string(x.second["Port"].get<uint16_t>()) : "Unknown") + "\n";
                     }
-
                 }
             }
-        } catch (std::exception e) {
-            std::cerr<<"Error " << e.what() << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << std::endl;
         }
 
-
         res.set_content(itemText, "text/plain");
-    });
+    }
 
-    // Avvia il server sulla porta 8080
-    std::cout << "Server avviato su http://localhost:8080\n";
-    server.listen("0.0.0.0", 8080);
+    void handleConnect(const httplib::Request &req, httplib::Response &res){
+        std::string ser = req.get_param_value("service");
+        std::vector<std::string> services;
+        services.push_back(ser);
+        std::cout << "Connecting to service: " << ser << std::endl;
+        std::string string_tcptunnel = tcptunnel(connection, services);
+        res.set_content(string_tcptunnel, "text/plain");
+    }
+
+    std::string tcptunnel(std::shared_ptr<nabto::client::Connection> connection, std::vector<std::string> services)
+    {   
+        std::string str="";
+        for (auto serviceAndPort : services) {
+            std::string service;
+            uint16_t localPort;
+            if (!split_in_service_and_port(serviceAndPort, service, localPort)) {
+                return str;
+            }
+            
+            std::shared_ptr<nabto::client::TcpTunnel> tunnel;
+            try {
+                tunnel = connection->createTcpTunnel();
+                std::cout << serviceAndPort << std::endl;
+                tunnel->open(service, localPort)->waitForResult();
+                tunnels.push_back(tunnel);
+            } catch (std::exception& e) {
+                return "Failed to open a tunnel to " + serviceAndPort + " error: " + e.what();
+            }
+
+            str = "Tunnel opened for '" + service + "' -> local port " + std::to_string(tunnel->getLocalPort());
+            
+        }
+        return str;
+    }
+};
+
+int main() {
+    int port = 8080;
+    std::string homeDir = Configuration::getDefaultHomeDir();
+    Configuration::InitializeWithDirectory(homeDir);
+
+    HttpServer server(port);
+    server.initialize();
+    server.start();
 
     return 0;
-
 }
+
 
