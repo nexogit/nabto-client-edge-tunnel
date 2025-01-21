@@ -569,7 +569,7 @@ private:
         bookmarks = Configuration::PrintBookmarks();
         auto contex = nabto::client::Context::create();
         std::string str;
-
+        std::cout << "name" + name << std::endl;
         auto connectToDevice = [&str, this, contex](const std::pair<int, Configuration::DeviceInfo>& bookmark) {
             try {
                 auto d = Configuration::GetPairedDevice(bookmark.first);
