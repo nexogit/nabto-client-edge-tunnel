@@ -580,7 +580,7 @@ private:
                     std::tie(ec, pi) = IAM::get_pairing_info(c);
 
                     if (pi) {
-                        std::string localStr = "[" + std::to_string(bookmark.first) + "] Name: " + pi->getFriendlyName() + "\tId: " + bookmark.second.deviceId_ + "\n";
+                        std::string localStr = pi->getFriendlyName() + ":" + bookmark.second.deviceId_ + "\n";
                         std::lock_guard<std::mutex> lock(strMutex);
                         str += localStr;
                     }
@@ -626,16 +626,13 @@ private:
                     auto servs = list_services(connection);
                     tunnels.clear();
                     for (const auto& x : servs) {
-                        itemText += "Id: " + x.first + "\t";
-                        itemText += "Type: " + (x.second.contains("Type") ? x.second["Type"].get<std::string>() : "Unknown") + "\t";
-                        itemText += "Port: " + (x.second.contains("Port") && x.second["Port"].is_number_integer() ? std::to_string(x.second["Port"].get<uint16_t>()) : "Unknown") + "\n";
+                        itemText += x.first + ":" + (x.second.contains("Type") ? x.second["Type"].get<std::string>() : "Unknown") + ":" +(x.second.contains("Port") && x.second["Port"].is_number_integer() ? std::to_string(x.second["Port"].get<uint16_t>()) : "Unknown") + "\n";
                     }
                 }
             }
         } catch (const std::exception& e) {
             std::cerr << "Error: " << e.what() << std::endl;
         }
-
         res.set_content(itemText, "text/plain");
     }
 
