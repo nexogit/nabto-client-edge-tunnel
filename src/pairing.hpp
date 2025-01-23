@@ -4,8 +4,7 @@
 #include <memory>
 #include <set>
 
-bool interactive_pair(std::shared_ptr<nabto::client::Context> Context);
-bool string_pair(std::shared_ptr<nabto::client::Context> Context, const std::string& pairString);
-bool direct_pair(std::shared_ptr<nabto::client::Context> Context, const std::string& host);
-
+std::string interactive_pair(std::shared_ptr<nabto::client::Context> Context);
+std::string string_pair(std::shared_ptr<nabto::client::Context> Context, const std::string& pairString, const std::string& user);
+std::string direct_pair(std::shared_ptr<nabto::client::Context> Context, const std::string& host);
 

@@ -300,7 +300,7 @@ void printDeviceInfo(std::shared_ptr<IAM::PairingInfo> pi)
     }
 }
 
-int main1(int argc, char** argv)
+/*int main1(int argc, char** argv)
 {
     cxxopts::Options options("Tunnel client", "Nabto tunnel client example.");
 
@@ -508,7 +508,7 @@ int main1(int argc, char** argv)
         return 1;
     }
 }
-
+*/
 class HttpServer {
 public:
     HttpServer(int port) : serverPort(port) {}
@@ -550,6 +550,7 @@ private:
     std::map<int, Configuration::DeviceInfo> bookmarks;
     std::shared_ptr<nabto::client::Connection> connection;
     std::vector<std::shared_ptr<nabto::client::TcpTunnel>> tunnels;
+
     void initializeEndpoints() {
         server.Get("/devices", [this](const httplib::Request &req, httplib::Response &res) {
             handleGetDevices(req, res);
@@ -562,6 +563,19 @@ private:
         server.Get("/connect", [this](const httplib::Request &req, httplib::Response &res) {
             handleConnect(req, res);
         });
+
+        server.Get("/pair", [this](const httplib::Request &req, httplib::Response &res) {
+            handlePairing(req, res);
+        });
+    }
+
+
+    void handlePairing(const httplib::Request &req, httplib::Response &res) {
+        auto sct = req.get_param_value("sct");
+        auto host = req.get_param_value("hostname");
+        std::cout << "sct: " << sct << std::endl;
+        std::string str = string_pair(ctx, sct, host);
+        res.set_content(str, "text/plain");
     }
 
     void handleGetDevices(const httplib::Request &req, httplib::Response &res) {
@@ -665,7 +679,7 @@ private:
                 return "Failed to open a tunnel to " + serviceAndPort + " error: " + e.what();
             }
 
-            str = "Tunnel opened for '" + service + "' -> local port " + std::to_string(tunnel->getLocalPort());
+            str = service + ":" + std::to_string(tunnel->getLocalPort());
             
         }
         return str;
