@@ -515,6 +515,8 @@ public:
 
     int initialize() {
         auto bookmarks = Configuration::PrintBookmarks();
+        ctx = nabto::client::Context::create();
+        initializeEndpoints();
 
         if (bookmarks.empty()) {
             std::cerr << "No bookmarks found." << std::endl;
@@ -531,9 +533,7 @@ public:
             return 1;
         }
 
-        ctx = nabto::client::Context::create();
         connection = createConnection(ctx, *device);
-        initializeEndpoints();
         return 0;
     }
 
