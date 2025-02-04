@@ -539,7 +539,15 @@ public:
 
     void start() {
         std::cout << "Server started at http://localhost:" << serverPort << "\n";
-        server.listen("0.0.0.0", serverPort);
+        try
+        {
+            server.listen("0.0.0.0", serverPort);
+        }
+        catch(const std::exception& e)
+        {
+            std::cerr << e.what() << '\n';
+        }
+        
     }
 
 private:
@@ -686,8 +694,8 @@ private:
     }
 };
 
-int main() {
-    int port = 8080;
+int main(int argc, char* argv[]) {
+    int port = std::atoi(argv[1]);;
     std::string homeDir = Configuration::getDefaultHomeDir();
     Configuration::InitializeWithDirectory(homeDir);
 
